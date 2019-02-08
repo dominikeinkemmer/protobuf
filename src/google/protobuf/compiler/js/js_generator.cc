@@ -163,31 +163,102 @@ string GetSnakeFilename(const string& filename) {
 }
 
 // Given a filename like foo/bar/baz.proto, returns the corresponding JavaScript
-// file foo/bar/baz.js.
+// file baz.js
+// The relative import path is extracted by GetRelativeImportPath 
+// so we only need the filename here
 string GetJSFilename(const GeneratorOptions& options, const string& filename) {
-  return StripProto(filename) + options.GetFileNameExtension();
+  std::vector<string> source_file_split = Split(filename, "/");
+  string filename_only = source_file_split.back();
+  return StripProto(filename_only) + options.GetFileNameExtension();
 }
 
-// Given a filename like foo/bar/baz.proto, returns the root directory
-// path ../../
-string GetRootPath(const string& from_filename, const string& to_filename) {
-  if (to_filename.find("google/protobuf") == 0) {
-    // Well-known types (.proto files in the google/protobuf directory) are
-    // assumed to come from the 'google-protobuf' npm package.  We may want to
-    // generalize this exception later by letting others put generated code in
-    // their own npm packages.
-    return "google-protobuf/";
+// Given a filename like foo/bar/baz.proto, returns the relative directory to the import file
+// or an npm module import
+string GetRelativeImportPath(const string& from_filename, const string& to_filename) {
+  std::cout << "Source: " << from_filename << "\n";
+  std::cout << "Import: " << to_filename << "\n";
+  std::vector<string> source_file_split = Split(from_filename, "/");
+  std::vector<string> import_file_split = Split(to_filename, "/");
+  // remove filenames
+  source_file_split.pop_back();
+  import_file_split.pop_back();
+
+  size_t source_path_length = source_file_split.size();
+
+  size_t equal_parts_counter = 0;
+  bool continue_running = true;
+
+  while(continue_running) {
+    if(source_file_split.empty() || import_file_split.empty()) {
+        continue_running = false;
+    } else {
+      string& current_path_part = source_file_split.front();
+      string& current_path_part_import = import_file_split.front();
+
+      if(current_path_part == current_path_part_import){
+        equal_parts_counter++;
+
+      // Delete the first entry so we can continue searching for similarities in the rest of the path
+      source_file_split.erase(source_file_split.begin());
+      import_file_split.erase(import_file_split.begin());
+        std::cout << "Found " << equal_parts_counter << " equal path parts \n";
+      // stop once a part of the path doesn't match between source and import
+      } else {
+        continue_running = false;
+      }
+    }
   }
 
-  size_t slashes = std::count(from_filename.begin(), from_filename.end(), '/');
-  if (slashes == 0) {
+
+  std::cout << "Source remaining: " << JoinStrings(source_file_split, "/") << "\n";
+  std::cout << "Import remaining: " << JoinStrings(import_file_split, "/") << "\n";
+  std::cout << "source_path_length: " << source_path_length << "\n";
+  std::cout << "import_file_split: " << import_file_split.size() << "\n";
+  if(source_path_length == equal_parts_counter && import_file_split.size() != 0) {
+    // import from subdirectory
+    // e.g. source -> /foo/baz.proto
+    //      import -> /foo/bar/baz2.proto
+    // expected return -> ./bar/
+    import_file_split.insert(import_file_split.begin(), "./");
+    string result = JoinStrings(import_file_split, "/");
+    std::cout << "Result: " << result << "\n";
+    return result;
+  } else if(source_path_length == equal_parts_counter) {
+    // Same dircetory import
+    std::cout << "Result: ./ \n";
     return "./";
+  } else if (equal_parts_counter == 0) {
+    // completely different package. Expect this to be npm package
+    // e.g. google/protobuf
+    string result = JoinStrings(import_file_split, "/");
+    std::cout << "Result: " << result << "\n";
+    return result;
+  } else if (source_file_split.size() > import_file_split.size()) {
+    // Import from higher directory
+    // e.g. source /foo/bar/baz/baz.proto
+    //      import /foo/bar.proto
+    // expected return -> ../../
+    std::vector<string> mapped_vector;
+    mapped_vector.resize(source_file_split.size());
+    // transform remaining path length to ../ 
+    std::transform(source_file_split.begin(), source_file_split.end(), mapped_vector.begin(), [](string d) -> string { return "../"; });
+    string result = JoinStrings(mapped_vector, "");
+    std::cout << "Result: " << result << "\n";
+    return result;
+  } else {
+    // import from different subdirectory
+    // e.g. source /foo/bar/baz/hoge.proto
+    //      import /foo/bar/hoge/baz.proto
+    // expected return -> ../hoge/
+    std::vector<string> mapped_vector;
+    mapped_vector.resize(source_file_split.size());
+    // transform remaining path length to ../ 
+    std::transform(source_file_split.begin(), source_file_split.end(), mapped_vector.begin(), [](string d) -> string { return "../"; });
+
+    string result = JoinStrings(mapped_vector, "") + JoinStrings(import_file_split, "/");
+    std::cout << "Result: " << result << "\n";
+    return result;
   }
-  string result = "";
-  for (size_t i = 0; i < slashes; i++) {
-    result += "../";
-  }
-  return result;
 }
 
 // Returns the alias we assign to the module of the given .proto filename
@@ -3678,7 +3749,7 @@ void Generator::GenerateFile(const GeneratorOptions& options,
           "var $alias$ = require('$file$');\n"
           "goog.object.extend(proto, $alias$);\n",
           "alias", ModuleAlias(name), "file",
-          GetRootPath(file->name(), name) + GetJSFilename(options, name));
+          GetRelativeImportPath(file->name(), name) + GetJSFilename(options, name));
     }
   }
 
